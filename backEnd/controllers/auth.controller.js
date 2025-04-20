@@ -30,7 +30,7 @@ const setcookies = (res, accessToken, refreshToken) => {
   res.cookie("refreshToken", refreshToken, {
     httpOnly: true,
     secure: process.env.NODE_ENV == "production",
-    SamSite: "strict",
+    samSite: "strict",
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 };
@@ -55,7 +55,7 @@ export const signup = async (req, res) => {
     //
 
     const { accessToken, refreshToken } = generateTokens(user._id);
-    storeRefreshToke(user._id, refreshToken);
+    await storeRefreshToke(user._id, refreshToken);
     setcookies(res, accessToken, refreshToken);
 
     res.status(201).json({
@@ -74,9 +74,76 @@ export const signup = async (req, res) => {
 };
 
 export const signin = async (req, res) => {
-  res.send("sign in route called");
+  const { email, password } = req.body;
+  const user = await User.findOne({ email });
+  try {
+    if (user && (await user.comparePassword(password))) {
+      const { accessToken, refreshToken } = generateTokens(user._id);
+      await storeRefreshToke(user._id, refreshToken);
+      setcookies(res, accessToken, refreshToken);
+
+      res.status(201).json({
+        user: {
+          _id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+        },
+        message: "User logged in successfully",
+      });
+    } else {
+      res.status(400).json({ message: "Invalid Credentials" });
+    }
+  } catch (error) {
+    console.error("Error in logging in:", error);
+    res.status(501).json({ message: error.message });
+  }
 };
 
 export const logout = async (req, res) => {
-  res.send("logout route called");
+  try {
+    const refreshToken = req.cookies.refreshToken;
+
+    if (refreshToken) {
+      const decoded = jwt.verify(refreshToken, process.env.refreshTokenSecret);
+      console.log(decoded.userId);
+      await redis.del(`refreshtoken:${decoded.userId}`);
+    }
+    res.clearCookie("accessToken");
+    res.clearCookie("refreshToken");
+    res.json({
+      message: "You are logged out",
+    });
+  } catch (error) {
+    res.status(500).json({ message: "server Error", Error: error.message });
+  }
+};
+
+export const refreshToken = async (req, res) => {
+  try {
+    const refreshToken = req.cookies.refreshToken;
+    if (!refreshToken) {
+      return res.status(401).json({ message: "No refrsh token Provided" });
+    }
+    const decoded = jwt.verify(refreshToken, process.env.refreshTokenSecret);
+    const storedToken = await redis.get(`refreshtoken:${decoded.userId}`);
+    if (storedToken !== refreshToken) {
+      return res.status(401).json({ message: "invalid refresh token" });
+    }
+    const accessToken = jwt.sign(
+      { userId: decoded.userId },
+      process.env.accessTokenSecret,
+      { expiresIn: "15m" }
+    );
+    res.cookie("accessToken", accessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV == "production",
+      sameSite: "strict",
+      maxAge: 15 * 60 * 1000,
+    });
+
+    res.json({ message: "Token refreshed Successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "ServerError", error: error.message });
+  }
 };
